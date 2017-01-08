@@ -21,18 +21,26 @@ library(rbenchmark)
 # Set options -------------------------------------------------------------
 set.seed(42)
 usable_cores <- detectCores()-1
-
-
-# Define parameters -------------------------------------------------------
 data_dir        <- "data"
 doc_types       <- c("blogs", "news", "twitter")
 drop_all_text   <- TRUE
 drop_text_lines <- TRUE
 language        <- "en_US"
+object_dir      <- "object"
 test_fraction   <- 0.05
 url_path  <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset"
 zip_name  <- "Coursera-SwiftKey.zip"
 
+
+# Create directories (if needed) ------------------------------------------
+if (!dir.exists(object_dir)) {dir.create(object_dir)} # saved R objects
+if (!dir.exists(data_dir)) {dir.create(data_dir)}     # all data files
+extract_dir  <- paste0(data_dir, "/extracted")
+if (!dir.exists(lang_dir)) {dir.create(lang_dir)}     # extracted data
+lang_dir  <- paste0(data_dir, "/", language)
+if (!dir.exists(lang_dir)) {dir.create(lang_dir)}     # language data
+
+# Define parameters -------------------------------------------------------
 abbreviations <- c("ave", "assn",
                    "blvd", "bros",
                    "capt", "col", "com",
@@ -52,24 +60,26 @@ abbreviations <- c("ave", "assn",
                    "sgt", "sr", "st",
                    "vs")
 
-months <- c("Jan",
-            "Feb",
-            "Mar",
-            "Apr",
-            "May",
-            "Jun",
-            "Jul",
-            "Aug",
-            "Sep", "Sept",
-            "Oct",
-            "Nov",
-            "Dec")
+months <- c("J[aA][nN]",
+            "F[eE][bB]",
+            "M[aA][rR]",
+            "A[pP][rR]",
+            "M[aA][yY]",
+            "J[uU][nN]",
+            "J[uU][lL]",
+            "A[uU][gG]",
+            "S[eE][pP][tT]?",
+            "O[cC][tT]",
+            "N[oO][vV]",
+            "D[eE][cC]")
 
-days <- c("Mon",
-          "Tue", "Tues",
-          "Wed",
-          "Thur", "Thurs",
-          "Fri")
+days <- c("M[oO][nN]",
+          "T[uU][eE][sS]?",
+          "W[eE][dD]",
+          "T[hH][uU][rR][sS]?",
+          "F[rR][iI]",
+          "S[aA][tT]",
+          "S[uU][nN]")
 
 states <- c("AL", "AK", "AR", "AZ", 
             "CA", "Calif", "CO", "Colo" , "CT", 
@@ -258,6 +268,7 @@ par_clean_text <- function(text_docs, pattern, new_text="",
 #   function    write_text_table(text_table, file_name, write_dir)
 #   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
 write_text_table <- function(text_table, file_name, write_dir) {
+    if (!dir.exists(write_dir)) {dir.create(write_dir)}
     write_file  <- paste0(write_dir, "/", file_name)
     write_con   <- file(write_file, open = "wt")
     write.table(text_table, write_con, row.names=FALSE)
@@ -331,22 +342,25 @@ find_strings <- function(text_lines, pattern, ...) {
 
 # DATA --------------------------------------------------------------------
 
-#   Download & unzip data -------------------------------------------------
+# Download zipped data from file_url location (if needed) -----------------
 zip_file <- paste0(data_dir, "/", zip_name)
 if (!file.exists(zip_file)) {
     file_url <- paste0(url_path, "/", zip_name)
     download.file(file_url, zip_file)
 }
-lang_dir  <- paste0(data_dir, "/final/", language)
-if (length(dir(lang_dir))==0) {unzip(zip_file, exdir=data_dir)}
 
 
-#   Read files line by line -----------------------------------------------
+# Unzip text files to /final/lang_dir (if needed) -------------------------
+final_lang_dir  <- paste0(data_dir, "/extracted/final/", language)
+if (length(dir(final_lang_dir))==0) {unzip(zip_file, exdir=extract_dir)}
+
+
+# Read files line by line -------------------------------------------------
 text_lines <- lapply(paste0(language, ".", doc_types,".txt"), 
                      read_file_lines, read_dir=lang_dir)
 
 
-#   Convert to list of data tables ----------------------------------------
+# Convert to list of data tables ------------------------------------------
 all_text <- lapply(text_lines, as.data.table)
 all_text <- lapply(all_text, setnames, old="V1", new="text_line")
 names(all_text) <- doc_types
@@ -355,43 +369,60 @@ all_text_counts <- sapply(all_text, nrow)
 if (drop_text_lines==TRUE) {rm(text_lines)}
 
 
-#   Remove control characters and double backslashes ----------------------
-all_text <- par_clean_text(all_text, pattern="[[:cntrl:]]", 
-                           new_text="", n_cores=usable_cores)
-all_text <- par_clean_text(all_text, pattern="\\\\", 
-                           new_text="", n_cores=usable_cores)
+# Remove control characters and double backslashes ------------------------
+tmp_cluster <- makeCluster(usable_cores)
+foreach(d=doc_types) %do% {
+  all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
+                                       all_text[[d]]$text_line, 
+                                       clean_text, 
+                                       pattern="[[:cntrl:]]",
+                                       new_text="",
+                                       perl=TRUE)
+}
+foreach(d=doc_types) %do% {
+  all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
+                                       all_text[[d]]$text_line, 
+                                       clean_text, 
+                                       pattern="\\\\",
+                                       new_text="",
+                                       perl=TRUE)
+}
+stopCluster(tmp_cluster)
 
 
-#   Split data ------------------------------------------------------------
-#       Randomly assign lines to subsets
+# Split data --------------------------------------------------------------
+
+#   Randomly assign lines to subsets --------------------------------------
 all_text <- lapply(all_text, split_data, n_splits=(1/test_fraction))
+save(all_text, file=paste0(object_dir,"/all_text.rda"))
 
-#       Select subsets for testing and training
+#   Select subsets for testing and training -------------------------------
 test <- foreach(d=doc_types) %do% {
     all_text[[d]][all_text[[d]]$dataset_id==(1/test_fraction),]
 }
 names(test) <- doc_types
+save(test, file=paste0(object_dir,"/test.rda"))
 
 train <- foreach(d=doc_types) %do% {
     all_text[[d]][all_text[[d]]$dataset_id!=(1/test_fraction),]
 }
 names(train) <- doc_types
+save(train, file=paste0(object_dir,"/train.rda"))
 
-if (drop_all_text==TRUE) {rm(all_text)}
-
-#           Check line counts
+#   Check line counts
 test_line_counts  <- sapply(test, nrow)
 train_line_counts <- sapply(train, nrow)
 all_text_counts == train_line_counts + test_line_counts
 
+if (drop_all_text==TRUE) {rm(all_text)}
+
 
 #   Write test and train datasets to file ---------------------------------
-test_dir <- paste0(data_dir, "/", language, "/", "test")
+test_dir <- paste0(lang_dir, "/", "test")
 foreach(d=doc_types) %do% {
     write_text_table(test[[d]], paste0(d, ".txt"), test_dir)
 }
-
-train_dir <- paste0(data_dir, "/", language, "/", "train")
+train_dir <- paste0(lang_dir, "/", "train")
 foreach(d=doc_types) %do% {
     write_text_table(train[[d]], paste0(d, ".txt"), train_dir)
 }
@@ -401,17 +432,16 @@ foreach(d=doc_types) %do% {
 # =========================================================================
 
 # Clean lines -------------------------------------------------------------
-debug_text <- train[["news"]][train[["news"]]$dataset_id==1, 1]
+debug_id <- 1
+debug_text <- train[["news"]][train[["news"]]$dataset_id==debug_id, 1]
 
-registerDoParallel(usable_cores)
+tmp_cluster <- makeCluster(usable_cores)
 
 #    Fix apostrophes ------------------------------------------------------
-debug_text$text_line <- par_clean_text(debug_text$text_line,
-                                       pattern="â€™",
-                                       new_text="'",
-                                       n_cores=usable_cores)
-debug_text$text_line <- clean_text(debug_text$text_line, 
-                                   pattern="(\\w)(â)(\\w) ",
+debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+                                   debug_text$text_line,
+                                   clean_text,
+                                   pattern="(\\w)(â|â€™)(\\w) ",
                                    new_text="\\1'\\3 ",
                                    perl=TRUE,
                                    ignore.case=TRUE)
@@ -429,21 +459,23 @@ foreach(abbr=abbreviations) %dopar% {
 }
 
 #        after months -----------------------------------------------------
-foreach(m=months) %dopar% {
-    debug_text$text_line <- clean_text(debug_text$text_line,
-                                       pattern=paste0("\\s", m, "\\.\\s"),
-                                       new_text=paste0(" ", m, " "),
-                                       perl=TRUE,
-                                       ignore.case=TRUE)
+foreach(m=months) %do% {
+  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+                                     debug_text$text_line,
+                                     clean_text,
+                                     pattern=paste0("(\\s)(", m, ")(\\.\\s)"),
+                                     new_text=paste0(" \\2 "),
+                                     perl=TRUE)
 }
 
 #        after days -------------------------------------------------------
-foreach(d=days) %dopar% {
-    debug_text$text_line <- clean_text(debug_text$text_line,
-                                       pattern=paste0("\\s", d, "\\.\\s"),
-                                       new_text=paste0(" ", d, " "),
-                                       perl=TRUE,
-                                       ignore.case=TRUE)
+foreach(d=days) %do% {
+  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+                                     debug_text$text_line,
+                                     clean_text,
+                                     pattern=paste0("(\\s)(", d, ")(\\.\\s)"),
+                                     new_text=paste0(" \\2 "),
+                                     perl=TRUE)
 }
 
 period_pattern <- "[a-z']+\\."
