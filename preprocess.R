@@ -478,6 +478,16 @@ foreach(d=days) %do% {
                                      perl=TRUE)
 }
 
+#        after states -----------------------------------------------------
+foreach(s=states) %do% {
+  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+                                     debug_text$text_line,
+                                     clean_text,
+                                     pattern=paste0("(\\s)(", s, ")(\\.\\s)"),
+                                     new_text=paste0(" \\2 "),
+                                     perl=TRUE)
+}
+
 period_pattern <- "[a-z']+\\."
 before_periods <- find_strings(debug_text$text_line, period_pattern,
                                ignore.case=TRUE, perl=TRUE)
