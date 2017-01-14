@@ -123,27 +123,27 @@ number_separators <- data.frame('pattern' = c('(\\d)(\\. ?)(\\d)',
                                               ),
                                 stringsAsFactors=FALSE)
 
-clean_numbers <- data.frame("pattern" = c("0", 
-                                           "1", 
-                                           "2", 
-                                           "3", 
-                                           "4", 
-                                           "5", 
-                                           "6", 
-                                           "7", 
-                                           "8", 
-                                           "9"),
-                            "text"    = c("ZERO ", 
-                                           "ONE ", 
-                                           "TWO ", 
-                                           "THREE ", 
-                                           "FOUR ", 
-                                           "FIVE ", 
-                                           "SIX ", 
-                                           "SEVEN ",
-                                           "EIGHT ", 
-                                           "NINE "),
-                            stringsAsFactors=FALSE)
+numbers <- data.frame("pattern" = c("0", 
+                                    "1", 
+                                    "2", 
+                                    "3", 
+                                    "4", 
+                                    "5", 
+                                    "6", 
+                                    "7", 
+                                    "8", 
+                                    "9"),
+                      "text"    = c("ZERO ", 
+                                    "ONE ", 
+                                    "TWO ", 
+                                    "THREE ", 
+                                    "FOUR ", 
+                                    "FIVE ", 
+                                    "SIX ", 
+                                    "SEVEN ",
+                                    "EIGHT ", 
+                                    "NINE "),
+                      stringsAsFactors=FALSE)
 
 
 
@@ -227,6 +227,43 @@ clean_text <- function(text_lines, pattern, new_text="", ...) {
 #   
 #   example      
 #   _______________________________________________________________________
+
+
+#   _______________________________________________________________________
+#   function    make_cleaner(pattern, new_text="")
+#   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
+make_text_cleaner <- function(pattern, new_text="", ...) {
+  function(text_lines) {
+    gsub(pattern, new_text, text_lines, ...)
+  }
+}
+#   summary     ?
+#
+#
+#   parameters  text_lines: character
+#      
+#               regex_pattern: character
+#                     
+#               new_text: character
+#
+#   returns     text_lines                           
+#   
+#   example      
+#   _______________________________________________________________________
+
+#   _______________________________________________________________________
+#   function    make_parallel(text_lines, regex_pattern, new_text="", 
+#                              n_cores=2)
+#   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
+make_parallel <- function(fn, unused_cores=1) {
+  function(...) {
+    n_cores <- detectCores()-unused_cores
+    tmp_cluster <- makeCluster(n_cores)
+    fn_output <- parSapply(cl=tmp_cluster, fn(...))
+    stopCluster(tmp_cluster)
+    fn_output
+  }
+}
 
 
 #   _______________________________________________________________________
@@ -441,65 +478,115 @@ tmp_cluster <- makeCluster(usable_cores)
 debug_text$text_line  <- parSapply(cl=tmp_cluster, 
                                    debug_text$text_line,
                                    clean_text,
-                                   pattern="(\\w)(â|â€™)(\\w) ",
+                                   pattern="(\\w)(â|â€™|â)(\\w) ",
                                    new_text="\\1'\\3 ",
                                    perl=TRUE,
                                    ignore.case=TRUE)
 
+#    Remove foreign characters --------------------------------------------
+debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+                                   debug_text$text_line,
+                                   clean_text,
+                                   pattern="[â¦€™]",
+                                   new_text="",
+                                   perl=TRUE,
+                                   ignore.case=TRUE)
 
 #    Remove periods -------------------------------------------------------
 
-#        after abbreviations ----------------------------------------------
-foreach(abbr=abbreviations) %dopar% {
-    debug_text$text_line <- clean_text(debug_text$text_line,
-                                       pattern=paste0("\\s", abbr, "\\.\\s"),
-                                       new_text=paste0(" ", abbr, " "),
-                                       perl=TRUE,
-                                       ignore.case=TRUE)
-}
+#       in initials -------------------------------------------------------
+debug_text$text_line <- parSapply(cl=tmp_cluster,
+                                  debug_text$text_line,
+                                  clean_text,
+                                  pattern="(?<!\\w)([a-zA-Z])\\.",
+                                  new_text="\\1",
+                                  perl=TRUE)
 
 #        after months -----------------------------------------------------
-foreach(m=months) %do% {
-  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+foreach(mo=months) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster, 
                                      debug_text$text_line,
                                      clean_text,
-                                     pattern=paste0("(\\s)(", m, ")(\\.\\s)"),
+                                     pattern=paste0("(\\s)(", mo, ")(\\.\\s)"),
                                      new_text=paste0(" \\2 "),
                                      perl=TRUE)
 }
+rm(mo)
 
 #        after days -------------------------------------------------------
-foreach(d=days) %do% {
-  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+foreach(da=days) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster, 
                                      debug_text$text_line,
                                      clean_text,
-                                     pattern=paste0("(\\s)(", d, ")(\\.\\s)"),
+                                     pattern=paste0("(\\s)(", da, ")(\\.\\s)"),
                                      new_text=paste0(" \\2 "),
                                      perl=TRUE)
 }
+rm(da)
 
 #        after states -----------------------------------------------------
-foreach(s=states) %do% {
-  debug_text$text_line  <- parSapply(cl=tmp_cluster, 
+foreach(st=states) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster, 
                                      debug_text$text_line,
                                      clean_text,
-                                     pattern=paste0("(\\s)(", s, ")(\\.\\s)"),
+                                     pattern=paste0("(\\s)(", st, ")(\\.\\s)"),
                                      new_text=paste0(" \\2 "),
                                      perl=TRUE)
+} 
+rm(st)
+
+
+#        after abbreviations ----------------------------------------------
+foreach(ab=abbreviations) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster, 
+                                    debug_text$text_line,
+                                    clean_text,
+                                    pattern=paste0("(\\s)(", ab, ")(\\.\\s)"),
+                                    new_text=paste0(" \\2 "),
+                                    perl=TRUE,
+                                    ignore.case=TRUE)
 }
 
 period_pattern <- "[a-z']+\\."
 before_periods <- find_strings(debug_text$text_line, period_pattern,
                                ignore.case=TRUE, perl=TRUE)
 
-#    Handle numbers -------------------------------------------------------
-foreach(num_sep=iter(number_separators, by='row')) %do% {
-    debug_text$text_line <- clean_text(debug_text$text_line,
-                                       pattern=num_sep$pattern,
-                                       new_text=num_sep$text,
-                                       perl=TRUE)
-}
+# Break lines into sentences ----------------------------------------------
+debug_text$text_line <- parSapply(cl=tmp_cluster,
+                                  debug_text$text_line,
+                                  clean_text,
+                                  pattern="\\.(?=\\s+[A-Z])",
+                                  new_text="\n",
+                                  perl=TRUE)
 
+# tmpText <- gsub("(\\. )([[:upper:]])", "\n\\2", tmpText, perl = TRUE)
+
+# Convert to lowercase ----------------------------------------------------
+save(debug_text, file=paste0(object_dir,"/debug_text_mixed_case.rda"))
+debug_text$text_line <- tolower(debug_text$text_line)
+
+# Replace number and associated separators with UPPERCASE words -----------
+foreach(ns=iter(number_separators, by='row')) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster,
+                                    debug_text$text_line,
+                                    clean_text,
+                                    pattern=ns$pattern,
+                                    new_text=ns$text,
+                                    perl=TRUE)
+}
+rm(ns)
+
+foreach(no=iter(numbers, by='row')) %do% {
+  debug_text$text_line <- parSapply(cl=tmp_cluster,
+                                    debug_text$text_line,
+                                    clean_text,
+                                    pattern=no$pattern,
+                                    new_text=no$text,
+                                    perl=TRUE)
+}
+rm(no)
+
+# Mark Beginnings and Ends of Sentences (clauses) as BOS and EOS ----------
 
 
 # for (i in 1:nrow(clean_text_parameters)){
@@ -539,7 +626,7 @@ cleanText <- function(x, y){
 # tmpText <- gsub("[?!();:]", "\r", tmpText, perl = TRUE)
 # tmpText <- gsub("(\\. )([[:upper:]])", "\n\\2", tmpText, perl = TRUE)
 # tmpText <- gsub("(â€œ)(\\w+)(â€)", "\n\\2\n", tmpText, perl = TRUE)
-tmpText <- tolower(tmpText)
+# tmpText <- tolower(tmpText)
 # tmpText <- gsub("0", "ZERO ", tmpText, perl = TRUE)
 # tmpText <- gsub("1", "ONE ", tmpText, perl = TRUE)
 # tmpText <- gsub("2", "TWO ", tmpText, perl = TRUE)
@@ -550,8 +637,8 @@ tmpText <- tolower(tmpText)
 # tmpText <- gsub("7", "SEVEN ", tmpText, perl = TRUE)
 # tmpText <- gsub("8", "EIGHT ", tmpText, perl = TRUE)
 # tmpText <- gsub("9", "NINE ", tmpText, perl = TRUE)
-tmpText <- gsub("(\\. ?)([[:upper:]])", "POINT \\2", tmpText, perl = TRUE)
-tmpText <- gsub("([[:upper:]] ?)\\%", "\\1 PERCENT", tmpText, perl = TRUE)
+# tmpText <- gsub("(\\. ?)([[:upper:]])", "POINT \\2", tmpText, perl = TRUE)
+# tmpText <- gsub("([[:upper:]] ?)\\%", "\\1 PERCENT", tmpText, perl = TRUE)
 tmpText <- gsub("[^abBcCdeEfFgGhHiIjklmnNoOpPqrRsStTuUvVwWxXyzZ'\\r\\s]", 
                 " ", tmpText, perl = TRUE)
 tmpText <- gsub("\\h+", " ", tmpText, perl = TRUE)
