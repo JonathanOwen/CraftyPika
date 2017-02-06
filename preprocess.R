@@ -1,18 +1,43 @@
 
 # REMINDERS ---------------------------------------------------------------
 
-# 1. Fix a.m. amd p.m.
+# 1. Some apostrophes are not being fixed.
+#    e.g. train['news'] subset 1, line 935
+#         "The real problem we have is weâre taking in too little money and 
+#          weâre spending too much, and thatâs not going to be solved..."
+#         Only the â is replaced by an apostrophe.
+# 2. Cases when apostrophe should end the word will not be found. This is 
+#    expected behavior of the regex pattern "(\\w)(â|â€™|â)(\\w) ".
+#    e.g. "the bankâs money" will be fixed to "the bank's money" but
+#         "the banksâ money" will not be fixed.
 
 
 # =========================================================================
 # SETUP
 # =========================================================================
 
-# Load libraries ----------------------------------------------------------
-library(data.table)
-library(foreach)
-library(doParallel)
-library(rbenchmark)
+# Load required packages --------------------------------------------------
+# manage_package
+# see "Elegant way to check for missing packages and install them?"
+#     (http://stackoverflow.com/questions/4090169)
+#     Solution proposed by Simon O'Hanlon 
+#     (http://stackoverflow.com/users/1478381/simon-ohanlon)
+#     Modified by removing for loop in so that manage_package, aka foo in 
+#     original solution, takes a single package as its argument.
+#     All packages are checked, installed when missing, and loaded by using 
+#     lapply of managed_package on required_packages list.
+manage_package <- function(package){
+    if(!require(package, character.only=TRUE)){
+        install.packages(p, dependencies=TRUE)
+    }
+    require(package, character.only=TRUE, quietly=TRUE)
+}
+
+required_packages <- c("data.table",
+                       "foreach",
+                       "doParallel",
+                       "rbenchmark")
+invisible(lapply(required_packages, manage_package))
 #library(dplyr)
 #library(quanteda)
 #library(stringi)
@@ -20,7 +45,6 @@ library(rbenchmark)
 
 # Set options -------------------------------------------------------------
 set.seed(42)
-usable_cores <- detectCores()-1
 data_dir        <- "data"
 doc_types       <- c("blogs", "news", "twitter")
 drop_all_text   <- TRUE
@@ -40,111 +64,153 @@ if (!dir.exists(lang_dir)) {dir.create(lang_dir)}     # extracted data
 lang_dir  <- paste0(data_dir, "/", language)
 if (!dir.exists(lang_dir)) {dir.create(lang_dir)}     # language data
 
-# Define parameters -------------------------------------------------------
-abbreviations <- c("ave", "assn",
-                   "blvd", "bros",
-                   "capt", "col", "com",
-                   "dr",
-                   "etc",
-                   "gen", "gov",
-                   "inc",
-                   "jr",
-                   "lt",
-                   "mr", "mrs", "ms",
-                   "net",
-                   "org",
-                   "pp", "prof", "prop",
-                   "rep", "rev",
-                   "sen",
-                   "rd",                    
-                   "sgt", "sr", "st",
-                   "vs")
+# =========================================================================
+# PARAMETERS
+# =========================================================================
 
-months <- c("J[aA][nN]",
-            "F[eE][bB]",
-            "M[aA][rR]",
-            "A[pP][rR]",
-            "M[aA][yY]",
-            "J[uU][nN]",
-            "J[uU][lL]",
-            "A[uU][gG]",
-            "S[eE][pP][tT]?",
-            "O[cC][tT]",
-            "N[oO][vV]",
-            "D[eE][cC]")
+#   Regex patterns and replacement texts ----------------------------------
+abbreviations <- data.frame(
+    pattern=paste0("(\\s)(",
+                   c("ave", "assn",
+                     "blvd", "bros",
+                     "capt", "col", "com",
+                     "dr",
+                     "etc",
+                     "gen", "gov",
+                     "inc",
+                     "jr",
+                     "lt",
+                     "mr", "mrs", "ms",
+                     "net",
+                     "org",
+                     "pp", "prof", "prop",
+                     "rep", "rev",
+                     "sen",
+                     "rd",                    
+                     "sgt", "sr", "st",
+                     "vs"),  
+                   ")(\\.\\s)"),
+    replacement=" \\2 ",
+    stringsAsFactors=FALSE)
 
-days <- c("M[oO][nN]",
-          "T[uU][eE][sS]?",
-          "W[eE][dD]",
-          "T[hH][uU][rR][sS]?",
-          "F[rR][iI]",
-          "S[aA][tT]",
-          "S[uU][nN]")
+apostrophes <- data.frame(
+    pattern=    c("(?<=\\w)(â€™)(?=\\w)",
+                  "(?<=\\w)(â)(?=\\w)"),
+    replacement="'",
+    stringsAsFactors=FALSE)
 
-states <- c("AL", "AK", "AR", "AZ", 
-            "CA", "Calif", "CO", "Colo" , "CT", 
-            "DC", "DE",
-            "FL", "Fla",
-            "GA",
-            "HI",
-            "IA", "ID", "IL", "IN",
-            "KS", "KY",
-            "LA",
-            "MA", "MD", "ME", "MI", "Mich", "MN", "MO", "MS", "MT", 
-            "NC", "ND", "NE", "NH", "NJ", "NM", "NV", "NY",
-            "OH", "OK", "OR",
-            "PA",
-            "RI",
-            "SC", "SD",
-            "TN", "Tenn", "TX", 
-            "UT",
-            "VA", "VT", 
-            "WA", "WI", "Wis", "WV", "WY")
+control_chars <- data.frame(
+    pattern=    "[[:cntrl:]]",
+    replacement="",
+    stringsAsFactors=FALSE)
 
-number_separators <- data.frame('pattern' = c('(\\d)(\\. ?)(\\d)',
-                                              '(\\d)(,)(\\d{3})',
-                                              '(\\d)(\\: ?)(\\d)',
-                                              '(\\d)(\\/ ?)(\\d)',
-                                              '(\\d)(\\-)(\\d)',
-                                              '(\\d)( ?\\%)',
-                                              '(\\$ ?)(\\d)',
-                                              '(\\-)(\\d)',
-                                              '(\\+)(\\d)'
-                                              ),
-                                'text'    = c('\\1 POINT \\3',
-                                              '\\1\\3',
-                                              '\\1 COLON \\3',
-                                              '\\1 SLASH \\3',
-                                              '\\1 RANGE \\3',
-                                              '\\1 PERCENT',
-                                              'USD \\2',
-                                              'NEGATIVE \\2',
-                                              'POSITIVE \\2'
-                                              ),
-                                stringsAsFactors=FALSE)
+double_backslashes <- data.frame(
+    pattern=    "\\\\",
+    replacement="",
+    stringsAsFactors=FALSE)
 
-numbers <- data.frame("pattern" = c("0", 
-                                    "1", 
-                                    "2", 
-                                    "3", 
-                                    "4", 
-                                    "5", 
-                                    "6", 
-                                    "7", 
-                                    "8", 
-                                    "9"),
-                      "text"    = c("ZERO ", 
-                                    "ONE ", 
-                                    "TWO ", 
-                                    "THREE ", 
-                                    "FOUR ", 
-                                    "FIVE ", 
-                                    "SIX ", 
-                                    "SEVEN ",
-                                    "EIGHT ", 
-                                    "NINE "),
-                      stringsAsFactors=FALSE)
 
+months <- data.frame(
+    pattern=paste0("(\\s)(",
+                   c("J[aA][nN]",
+                     "F[eE][bB]",
+                     "M[aA][rR]",
+                     "A[pP][rR]",
+                     "M[aA][yY]",
+                     "J[uU][nN]",
+                     "J[uU][lL]",
+                     "A[uU][gG]",
+                     "S[eE][pP][tT]?",
+                     "O[cC][tT]",
+                     "N[oO][vV]",
+                     "D[eE][cC]"),
+                   ")(\\.\\s)"),
+    replacement=" \\2 ",
+    stringsAsFactors=FALSE)
+
+days <- data.frame(
+    pattern=paste0("(\\s)(",
+                   c("M[oO][nN]",
+                     "T[uU][eE][sS]?",
+                     "W[eE][dD]",
+                     "T[hH][uU][rR][sS]?",
+                     "F[rR][iI]",
+                     "S[aA][tT]",
+                     "S[uU][nN]"),
+                   ")(\\.\\s)"),
+    replacement=" \\2 ",
+    stringsAsFactors=FALSE)
+
+states <- data.frame(
+    pattern=paste0("(\\s)(",
+                   c("AL", "AK", "AR", "AZ", 
+                     "CA", "Calif", "CO", "Colo" , "CT", 
+                     "DC", "DE",
+                     "FL", "Fla",
+                     "GA",
+                     "HI",
+                     "IA", "ID", "IL", "IN",
+                     "KS", "KY",
+                     "LA",
+                     "MA", "MD", "ME", "MI", "Mich", "MN", 
+                     "MO", "MS", "MT", 
+                     "NC", "ND", "NE", "NH", "NJ", "NM", 
+                     "NV", "NY",
+                     "OH", "OK", "OR",
+                     "PA",
+                     "RI",
+                     "SC", "SD",
+                     "TN", "Tenn", "TX", 
+                     "UT",
+                     "VA", "VT", 
+                     "WA", "WI", "Wis", "WV", "WY"),
+                   ")(\\.\\s)"),
+    replacement=" \\2 ",
+    stringsAsFactors=FALSE)
+
+numeric_separators <- data.frame(
+    pattern=    c("(\\d)(\\. ?)(\\d)",
+                  "(\\d)(,)(\\d{3})",
+                  "(\\d)(\\: ?)(\\d)",
+                  '(\\d)(\\/ ?)(\\d)',
+                  '(\\d)(\\-)(\\d)',
+                  '(\\d)( ?\\%)',
+                  '(\\$ ?)(\\d)',
+                  '(\\-)(\\d)',
+                  '(\\+)(\\d)'),
+    replacement=c('\\1 POINT \\3',
+                  '\\1\\3',
+                  '\\1 COLON \\3',
+                  '\\1 SLASH \\3',
+                  '\\1 RANGE \\3',
+                  '\\1 PERCENT',
+                  'USD \\2',
+                  'NEGATIVE \\2',
+                  'POSITIVE \\2'),
+    stringsAsFactors=FALSE)
+
+numbers <- data.frame(
+    pattern=    c("0", 
+                  "1", 
+                  "2", 
+                  "3", 
+                  "4", 
+                  "5", 
+                  "6", 
+                  "7", 
+                  "8", 
+                  "9"),
+    replacement=c("ZERO ", 
+                  "ONE ", 
+                  "TWO ", 
+                  "THREE ", 
+                  "FOUR ", 
+                  "FIVE ", 
+                  "SIX ", 
+                  "SEVEN ",
+                  "EIGHT ", 
+                  "NINE "),
+    stringsAsFactors=FALSE)
 
 
 regex_patterns  <- c("â€™",
@@ -209,34 +275,14 @@ split_data <- function(dataset, n_splits=20){
 
 
 #   _______________________________________________________________________
-#   function    clean_text(text_lines, pattern, new_text="")
+#   function    make_clean_text(pattern, new_text="")
 #   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
-clean_text <- function(text_lines, pattern, new_text="", ...) {
-    text_lines <- gsub(pattern, new_text, text_lines, ...)
+make_clean_text <- function(pattern, replacement, ...) {
+    function(text_line) {
+        gsub(pattern, replacement, text_line, perl=TRUE, ...)
+    }
 }
-#   summary     ?
-#
-#
-#   parameters  text_lines: character
-#      
-#               regex_pattern: character
-#                     
-#               new_text: character
-#
-#   returns     text_lines                           
-#   
-#   example      
-#   _______________________________________________________________________
 
-
-#   _______________________________________________________________________
-#   function    make_cleaner(pattern, new_text="")
-#   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
-make_text_cleaner <- function(pattern, new_text="", ...) {
-  function(text_lines) {
-    gsub(pattern, new_text, text_lines, ...)
-  }
-}
 #   summary     ?
 #
 #
@@ -255,33 +301,10 @@ make_text_cleaner <- function(pattern, new_text="", ...) {
 #   function    make_parallel(text_lines, regex_pattern, new_text="", 
 #                              n_cores=2)
 #   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
-make_parallel <- function(fn, unused_cores=1) {
-  function(...) {
-    n_cores <- detectCores()-unused_cores
-    tmp_cluster <- makeCluster(n_cores)
-    fn_output <- parSapply(cl=tmp_cluster, fn(...))
-    stopCluster(tmp_cluster)
-    fn_output
-  }
-}
-
-
-#   _______________________________________________________________________
-#   function    par_clean_text(text_lines, regex_pattern, new_text="", 
-#                              n_cores=2)
-#   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
-par_clean_text <- function(text_docs, pattern, new_text="",
-                           n_cores=2) {
-    tmp_cluster <- makeCluster(n_cores)
-    foreach(d=doc_types) %do% {
-        text_docs[[d]]$text_line <- parSapply(cl=tmp_cluster, 
-                                              text_docs[[d]]$text_line, 
-                                              clean_text, 
-                                              pattern=pattern, 
-                                              new_text=new_text)
+make_parallel <- function(fn) {
+    function(...) {
+        parSapply(cl=tmp_cluster, fn(...))
     }
-    stopCluster(tmp_cluster)
-    text_docs
 }
 #   summary     ?
 #               ?
@@ -298,9 +321,23 @@ par_clean_text <- function(text_docs, pattern, new_text="",
 #   
 #   
 #   example      
-#   _______________________________________________________________________  
+#   _______________________________________________________________________ 
 
-
+full_clean <- function(text_lines, clean_text_type, ...){
+    tmp_cluster <- makeCluster(detectCores()-1)
+    foreach(i=iter(clean_text_type, by='row')) %do% {
+        print(i$pattern)
+        print(i$replacement)
+        parSapply(cl=tmp_cluster,
+                  text_lines,
+                  gsub,
+                  pattern=i$pattern,
+                  new_text=i$text,
+                  perl=TRUE,
+                  ...)
+    }
+    stopCluster(tmp_cluster)
+}
 #   _______________________________________________________________________
 #   function    write_text_table(text_table, file_name, write_dir)
 #   ¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯¯
@@ -407,24 +444,24 @@ if (drop_text_lines==TRUE) {rm(text_lines)}
 
 
 # Remove control characters and double backslashes ------------------------
-tmp_cluster <- makeCluster(usable_cores)
-foreach(d=doc_types) %do% {
-  all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
-                                       all_text[[d]]$text_line, 
-                                       clean_text, 
-                                       pattern="[[:cntrl:]]",
-                                       new_text="",
-                                       perl=TRUE)
-}
-foreach(d=doc_types) %do% {
-  all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
-                                       all_text[[d]]$text_line, 
-                                       clean_text, 
-                                       pattern="\\\\",
-                                       new_text="",
-                                       perl=TRUE)
-}
-stopCluster(tmp_cluster)
+# tmp_cluster <- makeCluster(usable_cores)
+# foreach(d=doc_types) %do% {
+#   all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
+#                                        all_text[[d]]$text_line, 
+#                                        clean_text, 
+#                                        pattern="[[:cntrl:]]",
+#                                        new_text="",
+#                                        perl=TRUE)
+# }
+# foreach(d=doc_types) %do% {
+#   all_text[[d]]$text_line <- parSapply(cl=tmp_cluster, 
+#                                        all_text[[d]]$text_line, 
+#                                        clean_text, 
+#                                        pattern="\\\\",
+#                                        new_text="",
+#                                        perl=TRUE)
+# }
+# stopCluster(tmp_cluster)
 
 
 # Split data --------------------------------------------------------------
@@ -467,7 +504,17 @@ foreach(d=doc_types) %do% {
 # =========================================================================
 # PREPROCESS 
 # =========================================================================
+clean_text_types <- c("apostrophes", "months", "days", "states")
 
+clean_text_functions <- lapply(setNames(clean_text_types, clean_text_types),
+                               make_clean_text)
+
+
+
+clean_apostrophe <- make_clean_text(pattern="(?<=\\w)(â|â€™)(?=\\w)",
+                                    new_text=rawToChar(as.raw(39)),
+                                    perl=TRUE)
+par_clean_apostrophe <- make_parallel(fix_apostrophe)
 # Clean lines -------------------------------------------------------------
 debug_id <- 1
 debug_text <- train[["news"]][train[["news"]]$dataset_id==debug_id, 1]
