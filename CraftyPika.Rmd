@@ -1,0 +1,499 @@
+---
+title: <h1 style="font-family:helvetica;font-size:250%;"><b>Crafty Pika</b></h1>
+author: Jonathan J. Owen
+date: March 1^st^, 2017
+output:
+    html_notebook:
+        theme: cosmo
+        highlight: kate
+---
+# {.tabset .tabset-fade .tabset-pills}
+## OVERVIEW
+<span style="font-family:helvetica;"><b>Crafty Pika</b></span> is a project to 
+create a text prediction data product based on natural language processing. It 
+is the capstone project and final course for the Coursera Data Science 
+Specialization.
+
+
+## SETUP
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+
+### <b>Load required packages</b>
+```{r}
+manage_package <- function(package){
+    if(!require(package, character.only=TRUE, quietly=TRUE)){
+        install.packages(package, dependencies=TRUE, quiet=TRUE)
+    }
+    require(package, character.only=TRUE, quietly=TRUE)
+}
+
+required_packages <- c('data.table',
+                       'dplyr',
+                       'dtplyr',
+                       "foreach",
+                       "doParallel",
+                       "microbenchmark",
+                       "quanteda",
+                       'stringr',
+                       'tidyr',
+                       'tidytext')
+invisible(lapply(required_packages, manage_package))
+```
+
+### <b>Set options</b>
+```{r}
+set.seed(42)
+data_dir        <- "data"
+doc_types       <- c("blogs", "news", "twitter")
+drop_docs       <- FALSE
+language        <- "en_US"
+ngram_length    <- 4
+object_dir      <- "object"
+test_fraction   <- 0.05
+url_path  <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset"
+zip_name  <- "Coursera-SwiftKey.zip"
+```
+
+### <b>Create directories</b>
+```{r}
+if (!dir.exists(object_dir)) {dir.create(object_dir)}    # saved R objects
+if (!dir.exists(data_dir)) {dir.create(data_dir)}        # all data files
+extract_dir  <- paste0(data_dir, "/extracted")
+if (!dir.exists(extract_dir)) {dir.create(extract_dir)}  # extracted data
+lang_dir  <- paste0(data_dir, "/", language)
+if (!dir.exists(lang_dir)) {dir.create(lang_dir)}        # language data
+```
+
+## FUNCTIONS
+### <b>read_file_lines</b>(file_name, read_dir=NULL)
+```{r}
+read_file_lines <- function(file_name, read_dir=NULL) {
+    if (!is.null(read_dir)){
+        read_file  <- paste0(read_dir, "/", file_name)
+    } else {
+        read_file  <- file_name    
+    }
+    read_con   <- file(read_file, open = "rb")
+    file_lines <- readLines(read_con, skipNul = TRUE, ok = TRUE)
+    close(read_con)
+    file_lines
+}
+```
+
+### <b>create_doc_id</b>(dataset)
+```{r}
+create_doc_id <- function(dataset){
+    doc_id <- seq_len(nrow(dataset))
+    dataset <- cbind(doc_id, dataset)
+}
+```
+
+
+### <b>split_data</b>(dataset, n_splits=20)
+```{r}
+split_data <- function(dataset, n_splits=20){
+    dataset_id <- ceiling(runif(n=nrow(dataset), min=0, max=n_splits))
+    dataset_id <- as.integer(dataset_id)
+    dataset <- cbind(dataset, dataset_id)
+}
+```
+
+
+### <b>clean_docs</b>(tbl)
+```{r}
+clean_docs <- function(tbl){
+    tbl$doc <- tbl$doc                                                      %>%
+        # apostrophes
+        str_replace_all(coll('â', ignore.case=TRUE), "'")                   %>%
+        # periods in acronyms
+        str_replace_all('(?<=\\s\\w)(\\.)(?=\\w)', '')                      %>%
+        # periods following month abbreviations
+        str_replace_all(
+            c('(?<=\\s)([Jj][AaUu][LlNn])\\.' = '\\1',
+              '(?<=\\s)([Ff][Ee][Bb])\\.' = '\\1',
+              '(?<=\\s)([Mm][Aa][RrYy])\\.' = '\\1',
+              '(?<=\\s)([Aa][PpUu][RrGg])\\.' = '\\1',
+              '(?<=\\s)([Ss][Ee][Pp][Tt]?)\\.' = '\\1',
+              '(?<=\\s)([Oo][Cc][Tt])\\.' = '\\1',
+              '(?<=\\s)([Nn][Oo][Vv])\\.' = '\\1',
+              '(?<=\\s)([Dd][Ee][Cc])\\.' = '\\1'))                         %>%
+        # periods following day of the week abbreviations
+        str_replace_all(
+            c('(?<=\\s)([Mm][Oo][Nn]?)\\.' = '\\1',
+              '(?<=\\s)(T[hHuU][eEuU]?[rR]?[sS]? )\\.' = '\\1',
+              '(?<=\\s)(W[eE][dD]?)\\.' = '\\1',
+              '(?<=\\s)([Ff][Rr][Ii]?)\\.' = '\\1',
+              '(?<=\\s)(S[AaUu][NnTt]?)\\.' = '\\1'))                       %>%
+        # periods following common abbreviations
+        str_replace_all(
+            c('(?<=\\s)([AaPp][MmPp])\\.' = '\\1', 
+              '(?<=\\s)([Aa][Ss]+[Nn])\\.' = '\\1',
+              '(?<=\\s)([Aa][Vv][Ee])\\.' = '\\1',
+              '(?<=\\s)([Bb][Ll][Vv][Dd])\\.' = '\\1', 
+              '(?<=\\s)([Bb][Rr][Oo][Ss])\\.' = '\\1',
+              '(?<=\\s)([Cc][Aa][Pp][Tt])\\.' = '\\1',
+              '(?<=\\s)([Cc][Oo][LlMm])\\.' = '\\1',
+              '(?<=\\s)([Dd][Rr])\\.' = '\\1',
+              '(?<=\\s)(etc)\\.' = '\\1',
+              '(?<=\\s)([Ee][Gg])\\.' = '\\1',
+              '(?<=\\s)([Gg][Ee][Nn])\\.' = '\\1',
+              '(?<=\\s)([Gg][Oo][Vv])\\.' = '\\1',
+              '(?<=\\s)(ie)\\.' = '\\1',
+              '(?<=\\s)([Ii][Nn][Cc])\\.' = '\\1',
+              '(?<=\\s)([Jj][Rr])\\.' = '\\1',
+              '(?<=\\s)([Ll][Tt])\\.' = '\\1',
+              '(?<=\\s)([Mm][RrSs]{1,2})\\.' = '\\1',
+              '(?<=\\s)([Nn][Ee][Tt])\\.' = '\\1',
+              '(?<=\\s)([Oo][Rr][Gg])\\.' = '\\1',
+              '(?<=\\s)([Pp][Rr][Oo][FfPp])\\.' = '\\1',
+              '(?<=\\s)([RrDd])\\.' = '\\1',
+              '(?<=\\s)([Rr][Ee][PpVv])\\.' = '\\1',
+              '(?<=\\s)([Ss][Ee][Nn])\\.' = '\\1',
+              '(?<=\\s)([Ss][Gg]?[RrTt])\\.' = '\\1',
+              '(?<=\\s)([Vv][Ss])\\.' = '\\1'))                             %>%
+        # periods following U.S. state abbreviations
+        str_replace_all(
+            c('(?<=\\s)([Aa][KkLlRrZz])\\.' = '\\1', 
+              '(?<=\\s)([Cc][AaOoTt]([Ll][Ii][Ff]|[Ll][Oo])?)\\.' = '\\1',
+              '(?<=\\s)([Dd][CcEe])\\.' = '\\1',
+              '(?<=\\s)([Ff][Ll][Aa]?)\\.' = '\\1',
+              '(?<=\\s)([Gg][Aa])\\.' = '\\1',
+              '(?<=\\s)([Hh][Ii])\\.' = '\\1',
+              '(?<=\\s)([Ii][AaDdLlNn])\\.' = '\\1',
+              '(?<=\\s)([Kk][SsYy])\\.' = '\\1',
+              '(?<=\\s)([Ll][Aa])\\.' = '\\1',
+              '(?<=\\s)([Mm][AaDdEeNnOoSsTt])\\.' = '\\1',
+              '(?<=\\s)([Mm][Ii]([Cc][Hh])?)\\.' = '\\1',
+              '(?<=\\s)([Nn][CcDdEeHhJjMmVvYy])\\.' = '\\1', 
+              '(?<=\\s)([Oo][HhKkRr])\\.' = '\\1',
+              '(?<=\\s)([Pp][Aa])\\.' = '\\1',
+              '(?<=\\s)([Rr][Ii])\\.' = '\\1',
+              '(?<=\\s)([Ss][CcDd])\\.' = '\\1',
+              '(?<=\\s)([Tt]([Nn]|[Ee]?[Xx]|[Ee][Nn]{2}))\\.' = '\\1',
+              '(?<=\\s)([Uu][Tt])\\.' = '\\1',
+              '(?<=\\s)([Vv][AaT])\\.' = '\\1',
+              '(?<=\\s)([Ww][AaVvYy])' = '\\1', 
+              '(?<=\\s)([Ww][Ii][Ss]?[Cc]?)\\.' = '\\1'))                   %>%
+        # convert docs to lowercase
+        str_to_lower()                                                      %>%
+        # replace non-alphanumeric characters in urls and email addresses
+        str_replace_all(
+            c('([a-z0-9._%+-]+)(@)([a-z0-9.-]+)(\\.)([a-z]{2,})' 
+              = '\\1 emailat \\3 emaildot \\5',
+              '(https?|ftp)(:\\/\\/)([a-z0-9_%+-]+)(\\.)([a-z]{2,})(\\.)([a-z]{2,})'
+              = '\\1 urlcolon urlslash urlslash \\3 urldot  \\5 urldot \\7',
+              '(https?|ftp)(:\\/\\/)([a-z0-9_%+-]+)(\\.)([a-z]{2,})'
+              = '\\1 urlcolon urlslash urlslash \\3 urldot  \\5',
+              '(w{2,3}[0-9]?)(\\.)([a-z0-9_%+-]+)(\\.)([a-z]{2,})(\\.)([a-z]{2,})'
+              = '\\1 urldot \\3 urldot  \\5 urldot \\7',
+              '(w{2,3}[0-9]?)(\\.)([a-z0-9_%+-]+)(\\.)([a-z]{2,})'
+              = '\\1 urldot \\3 urldot  \\5'))                              %>%
+        # replace symbols and separators near numbers
+        str_replace_all(
+            c('(\\d)(\\. ?)(\\d)' = '\\1 decimalpt \\3',
+              '(\\d)(,)(\\d{3})' = '\\1\\3',
+              '(\\d)(\\: ?)(\\d)' = '\\1 numrange \\3',
+              '(\\d)(\\/ ?)(\\d)'= '\\1 numslash \\3',
+              '(\\d)(\\-)(\\d)'=  '\\1 numrange \\3',
+              '(\\d)( ?\\%)' = '\\1 percentsign',
+              '(\\$ ?)(\\d)'= 'dollarsign \\2',
+              '(\\$ €)(\\d)'= 'eurosign \\2',
+              '(\\$ £)(\\d)'= 'poundsign \\2',
+              '(\\$ ¥)(\\d)'= 'yensign \\2',
+              '(\\-)(\\d)' = 'negativesign \\2',
+              '(\\+)(\\d)' = 'positivesign \\2'))                           %>%
+        # replace numbers
+        str_replace_all(
+            c('0' = ' zero ', 
+              '1' = ' one ', 
+              '2' = ' two ',  
+              '3' = ' three ',  
+              '4' = ' four ',  
+              '5' = ' five ',  
+              '6' = ' six ',
+              '7' = ' seven ', 
+              '8' = ' eight ',  
+              '9' = ' nine '))                                              %>%
+        # replace mark beginning and end of sentences/clauses
+        str_replace_all(
+            c('^' = 'bos ',
+              '$' = ' eos',
+              '[.?"()\\[\\]{}<>:;!]' =  ' eos bos ',
+              '\\-{2,}' =  ' eos bos ',
+              '&' = ' and '))                                               %>%
+        # remove non-ascii characters
+        str_replace_all('[^a-z\']', ' ')                                    %>%
+        # clean up near apostrophes
+        str_replace_all(c("(?<=n)\\'\\s+(?=t)" = "'",
+                          "(?<=ld)\\'\\s+(?=ve )" = "'",
+                          "(?<= i)\\'\\s+(?=[dm] )" = "'",
+                          "(?<= i)\\'\\s+(?=ll )" = "'",
+                          "(?<= i)\\'\\s+(?=ve )" = "'",
+                          "(?<= it)\\'\\s+(?=d )" = "'",
+                          "(?<= it)\\'\\s+(?=ll )" = "'",
+                          "(?<= it)\\'\\s+(?=ve )" = "'",
+                          "(?<= s?[hw]e)\\'\\s+(?=d )" = "'",
+                          "(?<= s?[hw]e)\\'\\s+(?=ll )" = "'",
+                          "(?<= we)\\'\\s+(?=[rv]e )" = "'",
+                          "(?<= they)\\'\\s+(?=d )" = "'",
+                          "(?<= they)\\'\\s+(?=ll )" = "'",
+                          "(?<= they)\\'\\s+(?=[rv]e )" = "'",
+                          "(?<= you)\\'\\s+(?=d )" = "'",
+                          "(?<= you)\\'\\s+(?=ll )" = "'",
+                          "(?<= you)\\'\\s+(?=[rv]e )" = "'",
+                          "(?<=[a-z])\\'\\s+(?=s )" = "'",
+                          "(?<=\\s)\\'(?=\\s)" = " ",
+                          "(?<!s)\\'(?=\\s)" = ""))                          %>%
+        # remove repeated spaces and empty sentences
+        str_replace_all(
+            c('\\s{2,}' = ' ',
+              '(bos ){2,}' = 'bos ',
+              '( eos){2,}' = ' eos',
+              'eos bos eos' = 'eos'))
+    tbl
+}
+```
+
+
+### <b>tokenize_tbl</b>(tbl, token='words', n=NULL, excluded=NULL, ...)
+```{r}
+tokenize_docs <- function(tbl, token='words', n=NULL, excluded=NULL, ...){
+    tokenized_docs <- data.table()
+    token_type = str_replace(token, 's$', '')
+    dataset_ids <- unique(unlist(tbl$dataset_id, use.names = FALSE))
+    for (i in dataset_ids){
+        if (is.null(n)){
+            tokenized_i <- tbl[dataset_id==i,]                              %>%
+                unnest_tokens_(token=token,
+                               input='doc',
+                               output=token_type,
+                               ...)
+        } else {
+            tokenized_i <- tbl[dataset_id==i,]                              %>%
+                unnest_tokens_(token=token,
+                               input='doc', 
+                               output=token_type,
+                               n=n,
+                               ...)
+        }
+        tokenized_i <- exclude_tokens(tokenized_i, excluded=excluded, n=n)
+        tokenized_i <- count_tokens(tokenized_i)
+        tokenized_docs <- rbindlist(list(tokenized_docs, tokenized_i))
+    }
+    rm(tokenized_i)
+    rm(dataset_ids)
+    rm(token_type)
+    tokenized_docs
+}
+```
+
+
+
+### <b>delete_stopwords</b>(tbl)
+```{r}
+delete_stopwords <- function(tbl){
+    tbl$doc <- tbl$doc                                                      %>%
+        str_replace_all(c(
+            '(?<=\\s)a[lmnst]?((?<=n)[dy])?(ll)?(?=\\s)' = '',
+            '(?<=\\s)abo(ut|ve)(?=\\s)' = '',
+            '(?<=\\s)after(?=\\s)' = '',
+            '(?<=\\s)again(st)?(?=\\s)' = '',
+            "(?<=\\s)are(n\'t)?(?=\\s)" = '',
+            "(?<=\\s)b[ey](cause|en|fore|ing|low|tween)?(?=\\s)"  = '',
+            '(?<=\\s)b(oth|ut)(?=\\s)' = '',
+            '(?<=\\s)can(no|\')t(?=\\s)' = '',
+            '(?<=\\s)[csw]h?ould(n\'t)?(?=\\s)' = '',
+            '(?<=\\s)d(id|o|ur)(es|ing|wn)?(n\'t)?(?=\\s)' = '',
+            '(?<=\\s)each(?=\\s)' = '',
+            '(?<=\\s)f(ew|or|rom|urther)(?=\\s)' = '',
+            # '(?<=\\s)ha(d|s|ve)(n\'t)?(?<=v)(ing)?(?=\\s)' = '',
+            "(?<=\\s)(h(e|ow)(re)?(\'(d|ll|s))?(?=\\s)" = '',
+            '(?<=\\s)(her|him?)(s(elf)?)?(?=\\s)' = '',
+            '(?<=\\s)i(\'(d|ll|m|ve))?(?=\\s)' = '',
+            "(?<=\\s)i[fnst](n\'t|\'s|self|to)?((?<=t)s)?(?=\\s)" = '',
+            '(?<=\\s)let\'s(?=\\s)' = '',
+            '(?<=\\s)m(e|ore|ost|ustn\'t|y)(self)?(?=\\s)' = '',
+            '(?<=\\s)no(r|t)?(?=\\s)' = '',
+            '(?<=\\s)o(ff?|n(ce|ly)?|r|ther|ught|ver|wn)(?=\\s)' = '',
+            '(?<=\\s)sh[ae](\'(d|ll|s))?(n\'t)?(?=\\s)' = '',
+            '(?<=\\s)s(ame|o(me)?|uch)(?=\\s)' = '',
+            '(?<=\\s)tha(n\t(\'s)?)(?=\\s)' = '',
+            '(?<=\\s)th(is|ose|rough)(?=\\s)' = '',
+            '(?<=\\s)to+(?=\\s)' = '',
+            '(?<=\\s)the(irs?|[mny]|[rs]e)?(\'d|\'ll|\'re|\'s|\'ve|selves)?(?=\\s)'
+            = '',
+            '(?<=\\s)u(nder|ntil|p)(?=\\s)' = '',
+            '(?<=\\s)very(?=\\s)' = '',
+            '(?<=\\s)w(as|h[eioy]|[eo]|hat|ith)(\'ll|\'?re|\'ve|n\'t|\'s)*(ch|le)?(?=\\s)'
+            = '',
+            '(?<=\\s)you(\'(d|ll|re|ve))?(rs?(el\\w+)?)?(?=\\s)' = '',
+            '\\s+' = ' '
+        ))
+}
+```
+# 
+# exclude_words <- rbindlist(list(stop_words[stop_words$lexicon=='snowball', 1], 
+#                                 profanity))
+### <b>exclude_tokens</b>(tbl, excluded)
+```{r}
+exclude_tokens <- function(tbl, excluded, n){
+    if (exists('tbl$word')){
+        tbl <- tbl                                                          %>%
+            anti_join(excluded)
+    } else {
+        j = seq_len(n)
+        words_j = paste0('word_', j)
+        tbl <- tbl                                                          %>%
+            separate(ngram, words_j, sep = ' ')
+        k <- 1
+        while (k <= n){
+            word_j <- words_j[k]
+            if (k > 1){
+                tbl <- tbl                                                  %>%
+                    filter(.[[word_j]] != 'bos')
+            }
+            if (k < n){
+                tbl <- tbl                                                  %>%
+                    filter(.[[word_j]] != 'eos')
+            }
+            if(!is.null(excluded)){
+                tbl <- tbl                                                  %>%
+                    filter(!.[[word_j]] %in% excluded$word)}
+            k <- k+1
+        }
+    }
+    rm(j); rm(k); rm(word_j); rm(words_j)
+    tbl
+}
+```
+
+### <b>count_tokens</b>(tbl)
+```{r}
+count_tokens <- function(tbl){
+    token_cols <- names(tbl)[grepl('word', names(tbl))]
+    tbl <- tbl %>%
+        group_by(doc_type, dataset_id)                                     %>%
+        count_(token_cols)
+}
+```
+
+
+
+## PREPROCESS
+
+### <b>Ingest data</b>
+
+### Download & unzip files
+```{r}
+zip_file <- paste0(data_dir, "/", zip_name)
+if (!file.exists(zip_file)) {
+    file_url <- paste0(url_path, "/", zip_name)
+    download.file(file_url, zip_file)
+}
+final_lang_dir  <- paste0(data_dir, "/extracted/final/", language)
+if (length(dir(final_lang_dir))==0) {unzip(zip_file, exdir=extract_dir)}
+```
+
+### Read into list of data tables
+```{r}
+docs <- lapply(paste0(language, ".", doc_types,".txt"), 
+                     read_file_lines, read_dir=final_lang_dir)
+docs <- lapply(docs, as.data.table)
+names(docs) <- doc_types
+docs <- lapply(docs, setnames, old="V1", new="doc")
+doc_counts <- sapply(docs, nrow)
+```
+
+### <b>Tidy data</b>
+
+### Create doc_id column
+```{r}
+docs <- lapply(docs, create_doc_id)
+```
+
+### Split data by random assignment to subsets
+```{r}
+docs <- lapply(docs, split_data, n_splits=(1/test_fraction))
+```
+
+### Convert to single data table with column of doc_type labels
+```{r}
+# docs <- rbindlist(docs)
+# doc_type <- foreach(doc_type=doc_types, .combine = 'c') %do% {
+#     rep(doc_type, doc_counts[doc_type])
+# }
+# docs <- cbind(doc_type, docs)
+# rm(doc_type)
+save(docs, file=paste0(object_dir,'/docs.rda'))
+if (drop_docs==TRUE) {rm(docs)}
+```
+
+### <b>Clean data</b>
+```{r}
+if (!exists('docs')){load(paste0(object_dir,'/docs.rda'))}
+docs <- lapply(docs, clean_docs)
+
+```
+
+
+
+### Save as separate train & test datasets
+```{r}
+save(docs, file=paste0(object_dir,"/clean_docs.rda"))
+train <- foreach (d=docs) %do% {d[dataset_id != (1/test_fraction),]}
+save(train, file=paste0(object_dir,"/clean_train.rda"))
+test <- foreach (d=docs) %do% {d[dataset_id != (1/test_fraction),]}
+save(test, file=paste0(object_dir,"/clean_test.rda"))
+if (drop_docs == TRUE) {rm(docs)}
+```
+
+
+
+## TOKENIZE
+
+### <b>Define words to exclude from tokenization</b>
+```{r}
+# Profanities
+profanity <- read_file_lines('profanity.txt')
+profanity <- as.data.frame(profanity)
+names(profanity) <- 'doc'
+profanity <- clean_docs(profanity)
+profanity$doc <- profanity$doc                                                      %>%
+    str_replace_all('bos|eos', '')                                                  %>%
+    str_replace_all('\\s+', ' ')                                                    %>%
+    str_trim('both')
+profanity <- unique(unlist(profanity))
+profanity <- as.data.frame(profanity, stringsAsFactors=FALSE)
+names(profanity) <- 'word'
+```
+
+
+```
+
+### <b>Tokenize</b>
+```{r}
+if (!exists(train)){load(paste0(object_dir,'/clean_train.rda'))}
+```
+```{r}
+f
+token_counts <- tokenize_docs(docs, 
+                              token='ngrams', 
+                              n=ngram_length, 
+                              excluded=profanity)
+```
+
+
+
+## EXPLORE
+
+
+
+## MODEL
+
+### <b>Create corpus</b>
+
+
+
