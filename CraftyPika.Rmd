@@ -35,6 +35,7 @@ required_packages <- c('data.table',
                        'dtplyr',
                        "foreach",
                        "doParallel",
+                       'ggplot2',
                        "microbenchmark",
                        "quanteda",
                        'stringr',
@@ -52,6 +53,7 @@ drop_docs       <- FALSE
 language        <- "en_US"
 ngram_length    <- 4
 object_dir      <- "object"
+keep_stopwords  <- FALSE
 test_fraction   <- 0.05
 url_path  <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset"
 zip_name  <- "Coursera-SwiftKey.zip"
@@ -258,7 +260,7 @@ clean_docs <- function(tbl){
 ```
 
 
-### <b>tokenize_tbl</b>(tbl, token='words', n=NULL, excluded=NULL, ...)
+### <b>tokenize_docs</b>(tbl, token='words', n=NULL, excluded=NULL, ...)
 ```{r}
 tokenize_docs <- function(tbl, token='words', n=NULL, excluded=NULL, ...){
     tokenized_docs <- data.table()
@@ -279,7 +281,9 @@ tokenize_docs <- function(tbl, token='words', n=NULL, excluded=NULL, ...){
                                n=n,
                                ...)
         }
-        tokenized_i <- exclude_tokens(tokenized_i, excluded=excluded, n=n)
+        if (!is.null(excluded)){
+            tokenized_i <- exclude_tokens(tokenized_i, excluded=excluded, n=n)
+        }
         tokenized_i <- count_tokens(tokenized_i)
         tokenized_docs <- rbindlist(list(tokenized_docs, tokenized_i))
     }
@@ -309,9 +313,11 @@ delete_stopwords <- function(tbl){
             '(?<=\\s)d(id|o|ur)(es|ing|wn)?(n\'t)?(?=\\s)' = '',
             '(?<=\\s)each(?=\\s)' = '',
             '(?<=\\s)f(ew|or|rom|urther)(?=\\s)' = '',
-            # '(?<=\\s)ha(d|s|ve)(n\'t)?(?<=v)(ing)?(?=\\s)' = '',
-            "(?<=\\s)(h(e|ow)(re)?(\'(d|ll|s))?(?=\\s)" = '',
+            '(?<=\\s)ha(d|s|ve)(n\'t)?(?<=v)(ing)?(?=\\s)' = '',
+            "(?<=\\s)he(\'(d|ll|s))?(?=\\s)" = '',
             '(?<=\\s)(her|him?)(s(elf)?)?(?=\\s)' = '',
+            "(?<=\\s)here(\'s)?(?=\\s)" = '',
+            "(?<=\\s)how(\'s)?(?=\\s)" = '',
             '(?<=\\s)i(\'(d|ll|m|ve))?(?=\\s)' = '',
             "(?<=\\s)i[fnst](n\'t|\'s|self|to)?((?<=t)s)?(?=\\s)" = '',
             '(?<=\\s)let\'s(?=\\s)' = '',
@@ -332,11 +338,12 @@ delete_stopwords <- function(tbl){
             '(?<=\\s)you(\'(d|ll|re|ve))?(rs?(el\\w+)?)?(?=\\s)' = '',
             '\\s+' = ' '
         ))
+    tbl
 }
 ```
-# 
-# exclude_words <- rbindlist(list(stop_words[stop_words$lexicon=='snowball', 1], 
-#                                 profanity))
+
+
+
 ### <b>exclude_tokens</b>(tbl, excluded)
 ```{r}
 exclude_tokens <- function(tbl, excluded, n){
@@ -375,7 +382,7 @@ exclude_tokens <- function(tbl, excluded, n){
 count_tokens <- function(tbl){
     token_cols <- names(tbl)[grepl('word', names(tbl))]
     tbl <- tbl %>%
-        group_by(doc_type, dataset_id)                                     %>%
+        group_by(dataset_id)                                               %>%
         count_(token_cols)
 }
 ```
@@ -417,16 +424,6 @@ docs <- lapply(docs, create_doc_id)
 ### Split data by random assignment to subsets
 ```{r}
 docs <- lapply(docs, split_data, n_splits=(1/test_fraction))
-```
-
-### Convert to single data table with column of doc_type labels
-```{r}
-# docs <- rbindlist(docs)
-# doc_type <- foreach(doc_type=doc_types, .combine = 'c') %do% {
-#     rep(doc_type, doc_counts[doc_type])
-# }
-# docs <- cbind(doc_type, docs)
-# rm(doc_type)
 save(docs, file=paste0(object_dir,'/docs.rda'))
 if (drop_docs==TRUE) {rm(docs)}
 ```
@@ -471,23 +468,58 @@ names(profanity) <- 'word'
 ```
 
 
-```
 
 ### <b>Tokenize</b>
 ```{r}
-if (!exists(train)){load(paste0(object_dir,'/clean_train.rda'))}
+if (!exists('docs')){load(paste0(object_dir,'/clean_docs.rda'))}
 ```
+
 ```{r}
-f
-token_counts <- tokenize_docs(docs, 
-                              token='ngrams', 
-                              n=ngram_length, 
-                              excluded=profanity)
+if(!keep_stopwords){
+        docs <- lapply(docs, delete_stopwords)
+        save(docs, file=paste0(object_dir,"/docs_no_stopwords.rda"))
+}
 ```
 
+```{r}
+tokens <- lapply(docs,
+                 tokenize_docs,
+                 token='ngrams',
+                 n=ngram_length,
+                 excluded=profanity)
+```
 
+```{r}
+save(tokens, file=paste0(object_dir,'/tokens.rda'))
+```
+
+### Convert to single data table with column of doc_type labels
+```{r}
+token_counts <- sapply(tokens, nrow)
+bag_of_words <- rbindlist(tokens)
+bag_of_words <- bag_of_words[,c(1:2, 6)]
+doc_type <- foreach(doc_type=doc_types, .combine = 'c') %do% {
+    rep(doc_type, token_counts[doc_type])
+}
+bag_of_words<- cbind(doc_type, bag_of_words)
+rm(doc_type)
+names(bag_of_words) <- c('doc_type', 'dataset_id', 'word', 'n')
+bag_of_words <- bag_of_words                                                %>%
+    filter(!word %in% c('bos', 'eos'))
+```
 
 ## EXPLORE
+
+```{r}
+bag_of_words %>%
+    filter(n > 500) %>%
+    mutate(word = reorder(word, n)) %>%
+    ggplot(aes(word, n)) +
+    geom_bar(stat = "identity") +
+    xlab(NULL) +
+    coord_flip() + 
+    facet_grid(dataset_id ~ doc_type)
+```
 
 
 
